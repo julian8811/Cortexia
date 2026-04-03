@@ -33,10 +33,10 @@ export default function NewTool() {
           setScrapeSource('direct');
         }
         if (data.title) setName(data.title.split(/[-|]/)[0].trim());
-        if (data.description) setShortDesc(data.description);
-        if (data.longDesc) setLongDesc(data.longDesc);
-        if (data.aiSummary) setAiSummary(data.aiSummary);
-        if (data.category) setCategory(data.category);
+        if (typeof data.description === 'string') setShortDesc(data.description);
+        if (typeof data.longDesc === 'string') setLongDesc(data.longDesc);
+        if (typeof data.aiSummary === 'string') setAiSummary(data.aiSummary);
+        if (typeof data.category === 'string' && data.category) setCategory(data.category);
       }
     } catch (error) {
       console.error('Failed to fetch metadata', error);

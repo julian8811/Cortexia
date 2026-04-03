@@ -10,13 +10,12 @@ const GEMINI_MODEL = "gemini-2.0-flash";
 const ALLOWED_PROTOCOLS = ['https:'];
 const BLOCKED_HOSTNAMES = ['localhost', '127.0.0.1', '0.0.0.0', '169.254.169.254', 'metadata.google.internal'];
 
-/** Sitios que suelen ser SPA / poco texto en meta: conviene enriquecer con Jina para el prompt a Gemini. */
+/** Sitios donde el HTML directo suele ser SPA; se enriquece con Jina solo como contexto extra (no sustituir meta buena). */
 const PREFER_JINA_HOSTNAME = new Set([
   'www.perplexity.ai',
   'perplexity.ai',
   'aistudio.google.com',
   'chat.openai.com',
-  'openai.com',
   'claude.ai',
   'gemini.google.com',
   'bard.google.com',
@@ -131,11 +130,41 @@ async function fetchViaJinaReader(targetUrl: string): Promise<string | null> {
   }
 }
 
-function parseJinaMarkdown(markdown: string, pageUrl: string) {
-  const lines = markdown.split('\n').map((l) => l.trim());
+/** Jina suele devolver menús; limpiamos antes de meta corta y de Gemini. */
+function sanitizeJinaMarkdown(markdown: string): string {
+  let s = markdown.replace(/\r\n/g, '\n');
+  s = s.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1');
+  const lines = s.split('\n');
+  const kept: string[] = [];
+  const skipRe =
+    /^(Pasar al contenido|Quiz me on|Documentación|OpenAI \| OpenAI|\s*\*?\s*$|Envía un mensaje)/i;
+  for (const line of lines) {
+    const t = line.trim();
+    if (!t) continue;
+    if (skipRe.test(t)) continue;
+    if (/^[\*\-]\s*$/.test(t)) continue;
+    const linkish = (t.match(/https?:\/\//g) || []).length;
+    if (linkish >= 2 && t.length < 120) continue;
+    if (/^[\*\-]\s+/.test(t) && t.length < 80 && /http/.test(t)) continue;
+    kept.push(t);
+  }
+  const joined = kept.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+  return joined.slice(0, 14000);
+}
+
+function isProseDescription(s: string): boolean {
+  const t = s.trim();
+  if (t.length < 40) return false;
+  const noise = (t.match(/\]\(https?:/g) || []).length + (t.match(/^\s*[\*\-]\s+\[/gm) || []).length;
+  if (noise > 3 && t.length < 400) return false;
+  return true;
+}
+
+function parseJinaMarkdown(pageUrl: string, sanitizedBody: string) {
+  const lines = sanitizedBody.split('\n').map((l) => l.trim());
   let title = '';
   let bodyStart = 0;
-  for (let i = 0; i < Math.min(lines.length, 20); i++) {
+  for (let i = 0; i < Math.min(lines.length, 25); i++) {
     if (lines[i].startsWith('# ')) {
       title = lines[i].replace(/^#\s+/, '').trim();
       bodyStart = i + 1;
@@ -143,11 +172,23 @@ function parseJinaMarkdown(markdown: string, pageUrl: string) {
     }
   }
   const rest = lines.slice(bodyStart).join('\n').trim();
-  const description = rest.slice(0, 800) || markdown.slice(0, 800);
+  let description = rest.slice(0, 900);
+  if (!isProseDescription(description)) {
+    const proseLine = lines
+      .slice(bodyStart)
+      .find(
+        (l) =>
+          l.length >= 55 &&
+          !/^[\*\-]\s/.test(l) &&
+          (l.match(/https?:\/\//g) || []).length <= 1 &&
+          !/^\[/.test(l)
+      );
+    description = (proseLine ?? rest).slice(0, 700) || sanitizedBody.slice(0, 450);
+  }
   return {
     rawTitle: title || new URL(pageUrl).hostname.replace(/^www\./, ''),
     rawDescription: description,
-    body: markdown.slice(0, 14000),
+    body: sanitizedBody,
   };
 }
 
@@ -185,12 +226,12 @@ Datos de la página:
 - Título detectado: ${rawTitle || '(desconocido)'}
 - Descripción corta (meta): ${rawDescription || '(ninguna)'}
 
-Material extraído del sitio (puede incluir markdown y texto visible):
+Material extraído (puede incluir restos de menús o enlaces; ignóralos por completo):
 ${contentForAi.slice(0, 26000)}
 
 Instrucciones:
-1) longDesc: entre 3 y 5 párrafos en español, tono técnico pero claro. Si el material es escaso, infiere solo lo que sea razonable para esta URL/producto conocido y dilo con cautela.
-2) aiSummary: UNA sola frase corta en español (máximo 140 caracteres), tipo tagline, sin comillas ni prefijos como "Lema:".
+1) longDesc: entre 3 y 5 párrafos en español sobre la empresa, productos y propuesta de valor. NO copies listas de navegación ni menús. Si el material es ruinoso, infiere con conocimiento público de la marca y dilo con cautela.
+2) aiSummary: UNA sola frase en español (máx. 140 caracteres), tagline real, sin el texto "Lema" ni placeholders.
 3) suggestedCategory: exactamente una de: Texto, Imagen, Video, Código, Audio, Chat, Marketing, Productividad.
 
 Responde SOLO un JSON válido, sin markdown ni texto alrededor.`;
@@ -283,6 +324,18 @@ function needsEnrichment(hostname: string): boolean {
   return PREFER_JINA_HOSTNAME.has(hostname) || PREFER_JINA_HOSTNAME.has(hostname.replace(/^www\./, ''));
 }
 
+function acceptLanguageForUrl(urlStr: string): string {
+  try {
+    const p = new URL(urlStr).pathname.toLowerCase();
+    if (p.includes('/es/') || /^\/es(?:-|$|[/?])/.test(p) || p.startsWith('/es')) {
+      return 'es-ES,es;q=0.9,en;q=0.8';
+    }
+  } catch {
+    /* noop */
+  }
+  return 'en-US,en;q=0.9';
+}
+
 export async function POST(request: Request) {
   try {
     const ip = request.headers.get('x-forwarded-for') || 'anonymous';
@@ -316,7 +369,7 @@ export async function POST(request: Request) {
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
           Accept:
             'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-          'Accept-Language': 'en-US,en;q=0.9',
+          'Accept-Language': acceptLanguageForUrl(url),
         },
         redirect: 'follow',
         signal: controller.signal,
@@ -356,14 +409,28 @@ export async function POST(request: Request) {
         null
       );
     } else if (jinaBody) {
-      const j = parseJinaMarkdown(jinaBody, url);
-      if (!rawTitle) rawTitle = j.rawTitle;
-      if (!rawDescription || rawDescription.length < 40) rawDescription = j.rawDescription;
-      else rawDescription = [rawDescription, j.rawDescription].filter(Boolean).join('\n\n').slice(0, 1200);
-      if (extracted?.rawTitle && extracted.rawTitle.length > j.rawTitle.length) {
-        rawTitle = extracted.rawTitle;
+      const sanitizedJina = sanitizeJinaMarkdown(jinaBody);
+      const j = parseJinaMarkdown(url, sanitizedJina);
+      const metaTitle = extracted?.rawTitle?.trim() ?? '';
+      const metaDesc = extracted?.rawDescription?.trim() ?? '';
+      if (metaTitle.length >= 2) rawTitle = metaTitle;
+      else if (!rawTitle) rawTitle = j.rawTitle;
+      if (metaDesc.length >= 50 && isProseDescription(metaDesc)) {
+        rawDescription = metaDesc;
+      } else if (isProseDescription(j.rawDescription)) {
+        rawDescription = j.rawDescription;
+      } else if (metaDesc.length >= 40) {
+        rawDescription = metaDesc;
+      } else {
+        rawDescription = (j.rawDescription || metaDesc).slice(0, 1200);
       }
-      contentForAi = buildContentForPrompt(rawDescription, extracted?.visibleText ?? '', extracted?.htmlSnippet ?? '', j.body);
+      const visibleForPrompt = (extracted?.visibleText ?? '').slice(0, 6000);
+      contentForAi = buildContentForPrompt(
+        rawDescription,
+        visibleForPrompt,
+        extracted?.htmlSnippet ?? '',
+        j.body
+      );
       source = 'jina';
       try {
         const u = new URL(url);
