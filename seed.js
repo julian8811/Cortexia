@@ -4,7 +4,7 @@ const path = require('path');
 const prisma = new PrismaClient({
   datasources: {
     db: {
-      url: process.env.DATABASE_URL || 'file:./prisma/dev.db'
+      url: process.env.DATABASE_URL
     }
   }
 });

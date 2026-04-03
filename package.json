@@ -6,7 +6,8 @@
     "dev": "next dev --webpack",
     "dev:turbo": "next dev",
     "postinstall": "prisma generate",
-    "build": "prisma generate && next build",
+    "clean": "node scripts/clean-next.cjs",
+    "build": "prisma generate && prisma migrate deploy && node scripts/clean-next.cjs && next build",
     "start": "next start",
     "lint": "eslint"
   },
