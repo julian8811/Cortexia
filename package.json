@@ -7,7 +7,8 @@
     "dev:turbo": "next dev",
     "postinstall": "prisma generate",
     "clean": "node scripts/clean-next.cjs",
-    "build": "prisma generate && prisma migrate deploy && node scripts/clean-next.cjs && next build",
+    "prebuild": "prisma generate && prisma migrate deploy",
+    "build": "node scripts/clean-next.cjs && next build",
     "start": "next start",
     "lint": "eslint"
   },
