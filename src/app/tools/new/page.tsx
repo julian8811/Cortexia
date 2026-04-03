@@ -13,10 +13,12 @@ export default function NewTool() {
   const [category, setCategory] = useState('');
   const [loadingMetadata, setLoadingMetadata] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [scrapeSource, setScrapeSource] = useState<'direct' | 'jina' | 'gemini_only' | null>(null);
 
   const fetchMetadata = async () => {
     if (!url) return;
     setLoadingMetadata(true);
+    setScrapeSource(null);
     try {
       const res = await fetch('/api/scrape', {
         method: 'POST',
@@ -25,6 +27,11 @@ export default function NewTool() {
       });
       if (res.ok) {
         const data = await res.json();
+        if (data.source === 'jina' || data.source === 'gemini_only') {
+          setScrapeSource(data.source);
+        } else {
+          setScrapeSource('direct');
+        }
         if (data.title) setName(data.title.split(/[-|]/)[0].trim());
         if (data.description) setShortDesc(data.description);
         if (data.longDesc) setLongDesc(data.longDesc);
@@ -86,7 +93,10 @@ export default function NewTool() {
                       type="url" 
                       required 
                       value={url}
-                      onChange={(e) => setUrl(e.target.value)}
+                      onChange={(e) => {
+                        setUrl(e.target.value);
+                        setScrapeSource(null);
+                      }}
                       className="w-full bg-surface-container-high border border-outline-variant/20 rounded-2xl pl-12 pr-6 py-4 text-sm text-white focus:ring-2 focus:ring-primary/50 outline-none transition-all hover:bg-surface-container-highest/50 shadow-lg"
                       placeholder="https://ejemplo-ia.com"
                     />
@@ -101,6 +111,16 @@ export default function NewTool() {
                     {loadingMetadata ? 'Analizando...' : 'Auto-Scrape'}
                   </button>
                 </div>
+                {scrapeSource === 'jina' && (
+                  <p className="text-[11px] text-primary/90 font-medium leading-relaxed mt-2 pl-1">
+                    El sitio no entregó HTML directo; se usó lectura alternativa del contenido. Revisa y ajusta los textos si hace falta.
+                  </p>
+                )}
+                {scrapeSource === 'gemini_only' && (
+                  <p className="text-[11px] text-amber-200/90 font-medium leading-relaxed mt-2 pl-1">
+                    No se pudo leer la página desde el servidor; las descripciones las generó solo la IA a partir de la URL. Comprueba que sean correctas.
+                  </p>
+                )}
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
