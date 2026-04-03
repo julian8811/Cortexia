@@ -3,7 +3,6 @@ import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/lib/auth";
 import { redirect } from "next/navigation";
 import Link from 'next/link';
-import { Heart, Key, User as UserIcon } from 'lucide-react';
 
 export default async function Dashboard() {
   const session = await getServerSession(authOptions);
