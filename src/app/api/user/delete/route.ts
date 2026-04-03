@@ -1,16 +1,16 @@
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/lib/auth";
+import { getSessionUserId } from "@/lib/session-user";
 import prisma from "@/lib/prisma";
 
 export async function DELETE() {
   try {
     const session = await getServerSession(authOptions);
-    if (!session?.user) {
+    const userId = getSessionUserId(session);
+    if (!userId) {
       return NextResponse.json({ error: "No autorizado" }, { status: 401 });
     }
-
-    const userId = session.user.id;
 
     // Delete related data in order to satisfy foreign key constraints
     

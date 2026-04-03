@@ -1,17 +1,16 @@
 import prisma from '@/lib/prisma';
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/lib/auth";
+import { getSessionUserId } from "@/lib/session-user";
 import { redirect } from "next/navigation";
 import Link from 'next/link';
 
 export default async function Dashboard() {
   const session = await getServerSession(authOptions);
-  
-  if (!session?.user) {
+  const userId = getSessionUserId(session);
+  if (!userId) {
     redirect('/login');
   }
-
-  const userId = session.user.id;
 
   const favorites = await prisma.favorite.findMany({
     where: { userId },
@@ -33,8 +32,8 @@ export default async function Dashboard() {
             <div className="h-24 w-24 mx-auto rounded-full bg-gradient-to-br from-primary to-primary-container flex items-center justify-center mb-4 border border-primary/20 shadow-[0_0_15px_rgba(205,189,255,0.2)]">
               <span className="material-symbols-outlined text-4xl text-on-primary" style={{fontVariationSettings: "'FILL' 1"}}>person</span>
             </div>
-            <h2 className="text-2xl font-black font-headline text-white tracking-tight mb-1">{session.user.name || "Usuario"}</h2>
-            <p className="text-on-surface-variant text-sm mb-6">{session.user.email}</p>
+            <h2 className="text-2xl font-black font-headline text-white tracking-tight mb-1">{session?.user?.name || "Usuario"}</h2>
+            <p className="text-on-surface-variant text-sm mb-6">{session?.user?.email}</p>
             
             <div className="flex flex-col gap-2">
               <Link href="/settings" className="w-full py-2 bg-surface-container border border-outline-variant/20 text-on-surface-variant font-bold rounded-lg text-sm hover:text-white hover:bg-surface-container-high transition-colors text-center">

@@ -1,20 +1,21 @@
 import prisma from '@/lib/prisma';
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/lib/auth";
+import { getSessionUserId } from "@/lib/session-user";
 import { redirect } from "next/navigation";
 import { revalidatePath } from 'next/cache';
 import { DeleteAccountBtn } from '@/components/settings/DeleteAccountBtn';
 
 export default async function SettingsPage() {
   const session = await getServerSession(authOptions);
-  
-  if (!session?.user?.email) {
+  const sessionUserId = getSessionUserId(session);
+  if (!session?.user?.email || !sessionUserId) {
     redirect('/login');
   }
 
-  // Fetch fresh user data
+  // Fetch fresh user data por id (aislado por sesión)
   const user = await prisma.user.findUnique({
-    where: { email: session.user.email }
+    where: { id: sessionUserId }
   });
 
   if (!user) {

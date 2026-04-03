@@ -2,6 +2,7 @@ import prisma from '@/lib/prisma';
 import { notFound } from 'next/navigation';
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/lib/auth";
+import { getSessionUserId } from "@/lib/session-user";
 import { FavoriteButton } from "@/components/tools/FavoriteButton";
 import { UserNotesSec } from "@/components/tools/UserNote";
 import { AddToCollectionBtn } from "@/components/tools/AddToCollectionBtn";
@@ -24,11 +25,11 @@ export default async function ToolDetails({ params }: { params: Promise<{ slug: 
   }
 
   const session = await getServerSession(authOptions);
+  const userId = getSessionUserId(session);
   let isFavorite = false;
   let userCollections: {id: string, name: string}[] = [];
 
-  if (session?.user) {
-    const userId = session.user.id;
+  if (userId) {
     const favorite = await prisma.favorite.findUnique({
       where: {
         userId_toolId: {
@@ -45,18 +46,14 @@ export default async function ToolDetails({ params }: { params: Promise<{ slug: 
     });
   }
 
-  // Fetch Notes
-  const existingNotes = await prisma.userNote.findMany({
-    where: {
-      toolId: tool.id,
-      OR: [
-        { isPrivate: false },
-        session?.user ? { userId: session.user.id } : { userId: "none" }
-      ]
-    },
-    include: { user: { select: { name: true } } },
-    orderBy: { createdAt: 'desc' }
-  });
+  // Solo notas del usuario actual (evita ver notas de otros)
+  const existingNotes = userId
+    ? await prisma.userNote.findMany({
+        where: { toolId: tool.id, userId },
+        include: { user: { select: { name: true } } },
+        orderBy: { createdAt: 'desc' }
+      })
+    : [];
 
 
   return (

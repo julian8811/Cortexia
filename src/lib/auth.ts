@@ -74,15 +74,19 @@ export const authOptions: AuthOptions = {
   callbacks: {
     session: ({ session, token }) => {
       if (session.user) {
-        session.user.id = token.id;
-        session.user.role = token.role;
+        const uid = (token.id as string | undefined) ?? (token.sub as string | undefined);
+        if (uid) {
+          session.user.id = uid;
+        }
+        session.user.role = token.role as string | undefined;
       }
       return session;
     },
     jwt: ({ token, user }) => {
       if (user) {
         token.id = user.id;
-        token.role = user.role;
+        token.sub = user.id;
+        token.role = user.role ?? "USER";
       }
       return token;
     },

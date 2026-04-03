@@ -1,12 +1,14 @@
 import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/lib/auth";
+import { getSessionUserId } from "@/lib/session-user";
 import prisma from "@/lib/prisma";
 
 export async function POST(request: Request) {
   try {
     const session = await getServerSession(authOptions);
-    if (!session?.user?.email) {
+    const userId = getSessionUserId(session);
+    if (!userId) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
@@ -18,7 +20,7 @@ export async function POST(request: Request) {
     const favorite = await prisma.favorite.create({
       data: {
         toolId,
-        userId: session.user.id,
+        userId,
       },
     });
 
@@ -34,7 +36,8 @@ export async function POST(request: Request) {
 export async function DELETE(request: Request) {
   try {
     const session = await getServerSession(authOptions);
-    if (!session?.user?.email) {
+    const userId = getSessionUserId(session);
+    if (!userId) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
@@ -46,7 +49,7 @@ export async function DELETE(request: Request) {
     await prisma.favorite.delete({
       where: {
         userId_toolId: {
-          userId: session.user.id,
+          userId,
           toolId,
         },
       },

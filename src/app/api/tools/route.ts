@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import prisma from '@/lib/prisma';
 import { getServerSession } from 'next-auth/next';
 import { authOptions } from '@/lib/auth';
+import { getSessionUserId } from '@/lib/session-user';
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
@@ -40,12 +41,10 @@ export async function POST(request: Request) {
     const session = await getServerSession(authOptions);
     const body = await request.json();
     
-    // Auth validation
-    if (!session?.user) {
+    const userId = getSessionUserId(session);
+    if (!userId || !session?.user) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
-    
-    const userId = session.user.id;
     const isAdmin = session.user.role === 'ADMIN';
 
     const slug = body.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)+/g, '');

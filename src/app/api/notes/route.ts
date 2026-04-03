@@ -2,17 +2,17 @@ import { NextResponse } from 'next/server';
 import prisma from '@/lib/prisma';
 import { getServerSession } from 'next-auth/next';
 import { authOptions } from '@/lib/auth';
+import { getSessionUserId } from '@/lib/session-user';
 
 export async function POST(request: Request) {
   try {
     const session = await getServerSession(authOptions);
-    if (!session?.user) {
+    const userId = getSessionUserId(session);
+    if (!userId) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
     const { toolId, content, isPrivate } = await request.json();
-    // @ts-ignore
-    const userId = session.user.id;
 
     const note = await prisma.userNote.create({
       data: {

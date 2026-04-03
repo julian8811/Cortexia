@@ -1,13 +1,14 @@
 import prisma from '@/lib/prisma';
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/lib/auth";
+import { getSessionUserId } from "@/lib/session-user";
 import { redirect } from "next/navigation";
 import { revalidatePath } from 'next/cache';
 
 export default async function AdminDashboard() {
   const session = await getServerSession(authOptions);
-  
-  if (!session?.user || session.user.role !== 'ADMIN') {
+  const adminId = getSessionUserId(session);
+  if (!adminId || session?.user?.role !== 'ADMIN') {
     redirect('/dashboard');
   }
 
@@ -24,6 +25,8 @@ export default async function AdminDashboard() {
     "use server"
     const toolId = formData.get('toolId') as string;
     const session = await getServerSession(authOptions);
+    const uid = getSessionUserId(session);
+    if (!uid || session?.user?.role !== 'ADMIN') return;
     
     await prisma.tool.update({
       where: { id: toolId },
@@ -31,17 +34,15 @@ export default async function AdminDashboard() {
     });
 
     // Create Audit Log
-    if(session?.user) {
-      await prisma.auditLog.create({
+    await prisma.auditLog.create({
         data: {
           toolId,
-          userId: session.user.id,
+          userId: uid,
           field: 'status',
           oldValue: 'BETA',
           newValue: 'ACTIVE'
         }
       });
-    }
 
     revalidatePath('/admin');
   }
@@ -50,24 +51,23 @@ export default async function AdminDashboard() {
     "use server"
     const toolId = formData.get('toolId') as string;
     const session = await getServerSession(authOptions);
+    const uid = getSessionUserId(session);
+    if (!uid || session?.user?.role !== 'ADMIN') return;
 
     await prisma.tool.update({
       where: { id: toolId },
       data: { status: 'DEAD' }
     });
 
-    // Create Audit Log
-    if(session?.user) {
-      await prisma.auditLog.create({
+    await prisma.auditLog.create({
         data: {
           toolId,
-          userId: session.user.id,
+          userId: uid,
           field: 'status',
           oldValue: 'BETA',
           newValue: 'DEAD'
         }
       });
-    }
 
     revalidatePath('/admin');
   }

@@ -2,6 +2,7 @@ import prisma from '@/lib/prisma';
 import Link from 'next/link';
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/lib/auth";
+import { getSessionUserId } from "@/lib/session-user";
 import { revalidatePath } from 'next/cache';
 export default async function CollectionsPage() {
   const session = await getServerSession(authOptions);
@@ -16,12 +17,12 @@ export default async function CollectionsPage() {
     orderBy: { createdAt: 'desc' }
   });
 
-  // Fetch User's Private Collections if logged in
+  // Fetch User's Private Collections if logged in (requiere id en JWT)
   let myCollections: any[] = [];
-  if (session?.user) {
-    const userId = session.user.id;
+  const sessionUserId = getSessionUserId(session);
+  if (sessionUserId) {
     myCollections = await prisma.collection.findMany({
-      where: { userId },
+      where: { userId: sessionUserId },
       include: {
         _count: { select: { items: true } }
       },

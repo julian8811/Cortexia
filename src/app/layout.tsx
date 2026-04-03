@@ -21,6 +21,9 @@ export const metadata: Metadata = {
   description: "Repository of Artificial Intelligence tools",
 };
 
+/** Evita HTML cacheado entre usuarios (datos de sesión mezclados en CDN/navegador). */
+export const dynamic = "force-dynamic";
+
 export default async function RootLayout({
   children,
 }: Readonly<{
