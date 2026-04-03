@@ -1,0 +1,148 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id            String       @id @default(cuid())
+  name          String?
+  email         String?      @unique
+  emailVerified DateTime?
+  password      String?
+  image         String?
+  role          String       @default("USER")
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+  auditLogs     AuditLog[]
+  collections   Collection[]
+  favorites     Favorite[]
+  tools         Tool[]
+  userNotes     UserNote[]
+}
+
+model Category {
+  id            String        @id @default(cuid())
+  name          String
+  slug          String        @unique
+  iconUrl       String?
+  subcategories Subcategory[]
+  tools         Tool[]
+}
+
+model Subcategory {
+  id         String   @id @default(cuid())
+  categoryId String
+  name       String
+  category   Category @relation(fields: [categoryId], references: [id])
+  tools      Tool[]
+}
+
+model Tag {
+  id    String    @id @default(cuid())
+  name  String
+  slug  String    @unique
+  tools ToolTag[]
+}
+
+model Tool {
+  id              String           @id @default(cuid())
+  name            String
+  slug            String           @unique
+  url             String
+  categoryId      String?
+  subcategoryId   String?
+  shortDesc       String?
+  longDesc        String?
+  aiSummary       String?
+  developer       String?
+  status          String           @default("ACTIVE")
+  businessModel   String           @default("FREE")
+  startingPrice   String?
+  hasApi          Boolean          @default(false)
+  docsUrl         String?
+  githubUrl       String?
+  logoUrl         String?
+  viewCount       Int              @default(0)
+  trendScore      Float            @default(0.0)
+  isFeatured      Boolean          @default(false)
+  avgRating       Float            @default(0.0)
+  ratingCount     Int              @default(0)
+  createdById     String?
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  auditLogs       AuditLog[]
+  collectionItems CollectionItem[]
+  favorites       Favorite[]
+  category        Category?        @relation(fields: [categoryId], references: [id])
+  subcategory     Subcategory?     @relation(fields: [subcategoryId], references: [id])
+  createdBy       User?            @relation(fields: [createdById], references: [id])
+  tags            ToolTag[]
+  userNotes       UserNote[]
+}
+
+model ToolTag {
+  toolId String
+  tagId  String
+  tag    Tag    @relation(fields: [tagId], references: [id])
+  tool   Tool   @relation(fields: [toolId], references: [id])
+
+  @@id([toolId, tagId])
+}
+
+model Favorite {
+  id        String   @id @default(cuid())
+  userId    String
+  toolId    String
+  createdAt DateTime @default(now())
+  tool      Tool     @relation(fields: [toolId], references: [id])
+  user      User     @relation(fields: [userId], references: [id])
+
+  @@unique([userId, toolId])
+}
+
+model Collection {
+  id        String           @id @default(cuid())
+  userId    String
+  name      String
+  isPublic  Boolean          @default(false)
+  createdAt DateTime         @default(now())
+  user      User             @relation(fields: [userId], references: [id])
+  items     CollectionItem[]
+}
+
+model CollectionItem {
+  collectionId String
+  toolId       String
+  tool         Tool       @relation(fields: [toolId], references: [id])
+  collection   Collection @relation(fields: [collectionId], references: [id])
+
+  @@id([collectionId, toolId])
+}
+
+model UserNote {
+  id        String   @id @default(cuid())
+  userId    String
+  toolId    String
+  content   String
+  isPrivate Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  tool      Tool     @relation(fields: [toolId], references: [id])
+  user      User     @relation(fields: [userId], references: [id])
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  toolId    String
+  userId    String?
+  field     String
+  oldValue  String?
+  newValue  String?
+  createdAt DateTime @default(now())
+  user      User?    @relation(fields: [userId], references: [id])
+  tool      Tool     @relation(fields: [toolId], references: [id])
+}
