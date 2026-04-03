@@ -34,12 +34,13 @@ export default async function CollectionsPage() {
     "use server"
     const name = formData.get('name') as string;
     const innerSession = await getServerSession(authOptions);
-    if(innerSession?.user?.id && name) {
+    const uid = getSessionUserId(innerSession);
+    if (uid && name) {
       await prisma.collection.create({
         data: {
           name,
           isPublic: false,
-          userId: innerSession.user.id
+          userId: uid
         }
       });
       revalidatePath('/collections');

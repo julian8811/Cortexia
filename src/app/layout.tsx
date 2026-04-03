@@ -3,6 +3,7 @@ import { Inter, Space_Grotesk } from 'next/font/google';
 import "./globals.css";
 import { Providers } from "@/components/layout/Providers";
 import { Navbar } from "@/components/layout/Navbar";
+import { unstable_noStore as noStore } from "next/cache";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/lib/auth";
 
@@ -23,12 +24,14 @@ export const metadata: Metadata = {
 
 /** Evita HTML cacheado entre usuarios (datos de sesión mezclados en CDN/navegador). */
 export const dynamic = "force-dynamic";
+export const fetchCache = "force-no-store";
 
 export default async function RootLayout({
   children,
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  noStore();
   const session = await getServerSession(authOptions);
 
   return (
@@ -42,7 +45,7 @@ export default async function RootLayout({
         <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=0" />
       </head>
       <body suppressHydrationWarning className="bg-surface text-on-surface min-h-screen font-body overflow-x-hidden">
-        <Providers>
+        <Providers session={session}>
           <Navbar />
           
           <main className="pt-24 min-h-screen">

@@ -24,17 +24,18 @@ export default async function SettingsPage() {
 
   async function updateProfile(formData: FormData) {
     "use server"
-    const name = formData.get('name') as string;
-    
-    // We update based on the current user's ID
-    if (user?.id) {
-      await prisma.user.update({
-        where: { id: user.id },
-        data: { name }
-      });
-      revalidatePath('/settings');
-      revalidatePath('/dashboard');
+    const innerSession = await getServerSession(authOptions);
+    const actorId = getSessionUserId(innerSession);
+    if (!actorId) {
+      redirect("/login");
     }
+    const name = formData.get("name") as string;
+    await prisma.user.update({
+      where: { id: actorId },
+      data: { name },
+    });
+    revalidatePath("/settings");
+    revalidatePath("/dashboard");
   }
 
   return (
