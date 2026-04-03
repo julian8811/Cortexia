@@ -1,15 +1,26 @@
 import { NextResponse } from 'next/server';
 import * as cheerio from 'cheerio';
-import { GoogleGenerativeAI } from "@google/generative-ai";
+import { GoogleGenerativeAI, SchemaType } from "@google/generative-ai";
 
 const apiKey = process.env.GEMINI_API_KEY;
 const genAI = apiKey ? new GoogleGenerativeAI(apiKey) : null;
 
-/** Modelo estable (evita nombres preview que fallen en producción). */
 const GEMINI_MODEL = "gemini-2.0-flash";
 
 const ALLOWED_PROTOCOLS = ['https:'];
 const BLOCKED_HOSTNAMES = ['localhost', '127.0.0.1', '0.0.0.0', '169.254.169.254', 'metadata.google.internal'];
+
+/** Sitios que suelen ser SPA / poco texto en meta: conviene enriquecer con Jina para el prompt a Gemini. */
+const PREFER_JINA_HOSTNAME = new Set([
+  'www.perplexity.ai',
+  'perplexity.ai',
+  'aistudio.google.com',
+  'chat.openai.com',
+  'openai.com',
+  'claude.ai',
+  'gemini.google.com',
+  'bard.google.com',
+]);
 
 const rateLimitMap = new Map<string, { count: number; resetTime: number }>();
 const RATE_LIMIT = 20;
@@ -48,6 +59,25 @@ function looksLikeBotWall(html: string): boolean {
   );
 }
 
+/** HTML con mucho JS suele confundir al modelo; forzamos texto visible + Jina si aplica. */
+function isScriptHeavyHtml(html: string): boolean {
+  const scripts = (html.match(/<script\b/gi) || []).length;
+  const len = html.length;
+  if (len < 8000) return scripts >= 3;
+  return scripts >= 8 || (scripts / Math.max(len / 50000, 1)) > 12;
+}
+
+function htmlToVisibleText(html: string, maxLen: number): string {
+  try {
+    const $ = cheerio.load(html);
+    $('script, style, noscript, iframe, svg').remove();
+    const text = $('body').length ? $('body').text() : $.root().text();
+    return text.replace(/\s+/g, ' ').trim().slice(0, maxLen);
+  } catch {
+    return '';
+  }
+}
+
 function extractFromHtml(html: string, pageUrl: string) {
   const $ = cheerio.load(html);
   let rawTitle =
@@ -72,14 +102,15 @@ function extractFromHtml(html: string, pageUrl: string) {
 
   rawTitle = rawTitle.trim();
   rawDescription = rawDescription.trim();
-  return { rawTitle, rawDescription, faviconUrl, htmlSnippet: html.substring(0, 8000) };
+  const visible = htmlToVisibleText(html, 12000);
+  const htmlSnippet = html.substring(0, 8000);
+  return { rawTitle, rawDescription, faviconUrl, htmlSnippet, visibleText: visible };
 }
 
-/** Jina Reader: texto legible cuando el sitio bloquea fetch servidor o entrega SPA vacía. */
 async function fetchViaJinaReader(targetUrl: string): Promise<string | null> {
   const jinaUrl = `https://r.jina.ai/${encodeURIComponent(targetUrl)}`;
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 20000);
+  const timeout = setTimeout(() => controller.abort(), 25000);
   try {
     const res = await fetch(jinaUrl, {
       headers: {
@@ -104,7 +135,7 @@ function parseJinaMarkdown(markdown: string, pageUrl: string) {
   const lines = markdown.split('\n').map((l) => l.trim());
   let title = '';
   let bodyStart = 0;
-  for (let i = 0; i < Math.min(lines.length, 15); i++) {
+  for (let i = 0; i < Math.min(lines.length, 20); i++) {
     if (lines[i].startsWith('# ')) {
       title = lines[i].replace(/^#\s+/, '').trim();
       bodyStart = i + 1;
@@ -112,54 +143,144 @@ function parseJinaMarkdown(markdown: string, pageUrl: string) {
     }
   }
   const rest = lines.slice(bodyStart).join('\n').trim();
-  const description = rest.slice(0, 600) || markdown.slice(0, 600);
+  const description = rest.slice(0, 800) || markdown.slice(0, 800);
   return {
     rawTitle: title || new URL(pageUrl).hostname.replace(/^www\./, ''),
     rawDescription: description,
-    htmlSnippet: markdown.slice(0, 8000),
+    body: markdown.slice(0, 14000),
   };
 }
 
-async function runGemini(
+function buildContentForPrompt(
+  rawDescription: string,
+  visibleText: string,
+  htmlSnippet: string,
+  jinaBody: string | null
+): string {
+  const parts: string[] = [];
+  if (rawDescription) parts.push(`Meta descripción:\n${rawDescription}`);
+  if (jinaBody) parts.push(`Contenido legible (markdown vía lector):\n${jinaBody}`);
+  if (visibleText.length > 80) parts.push(`Texto visible en la página (sin scripts):\n${visibleText}`);
+  if (!jinaBody && htmlSnippet.length > 200) {
+    parts.push(`Fragmento HTML (referencia):\n${htmlSnippet.slice(0, 4000)}`);
+  }
+  return parts.join('\n\n---\n\n').slice(0, 28000);
+}
+
+type AiShape = { longDesc: string; aiSummary: string; category: string };
+
+async function runGeminiStructured(
   url: string,
   rawTitle: string,
   rawDescription: string,
-  contentSnippet: string
-) {
-  const aiData = { longDesc: '', aiSummary: '', category: '' };
-  if (!genAI) return aiData;
+  contentForAi: string
+): Promise<AiShape> {
+  const empty: AiShape = { longDesc: '', aiSummary: '', category: '' };
+  if (!genAI) return empty;
+
+  const prompt = `Eres un archivero de herramientas de IA para el directorio Cortexia.
+
+Datos de la página:
+- URL: ${url}
+- Título detectado: ${rawTitle || '(desconocido)'}
+- Descripción corta (meta): ${rawDescription || '(ninguna)'}
+
+Material extraído del sitio (puede incluir markdown y texto visible):
+${contentForAi.slice(0, 26000)}
+
+Instrucciones:
+1) longDesc: entre 3 y 5 párrafos en español, tono técnico pero claro. Si el material es escaso, infiere solo lo que sea razonable para esta URL/producto conocido y dilo con cautela.
+2) aiSummary: UNA sola frase corta en español (máximo 140 caracteres), tipo tagline, sin comillas ni prefijos como "Lema:".
+3) suggestedCategory: exactamente una de: Texto, Imagen, Video, Código, Audio, Chat, Marketing, Productividad.
+
+Responde SOLO un JSON válido, sin markdown ni texto alrededor.`;
 
   try {
-    const model = genAI.getGenerativeModel({ model: GEMINI_MODEL });
-    const prompt = `Analiza esta herramienta de IA basada en su sitio web.
-        URL: ${url}
-        Título: ${rawTitle || '(desconocido)'}
-        Descripción: ${rawDescription || '(ninguna)'}
-        Contenido extraído (puede ser HTML o markdown parcial): ${contentSnippet.slice(0, 12000)}
-
-        Responde estrictamente en formato JSON con estas llaves:
-        "longDesc": (una descripción técnica detallada de 3 párrafos),
-        "aiSummary": (un lema pegadizo de una sola frase que resuma su valor único),
-        "suggestedCategory": (elige una: Texto, Imagen, Video, Código, Audio, Chat, Marketing, Productividad)
-        `;
+    const model = genAI.getGenerativeModel({
+      model: GEMINI_MODEL,
+      generationConfig: {
+        temperature: 0.35,
+        maxOutputTokens: 8192,
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: SchemaType.OBJECT,
+          properties: {
+            longDesc: { type: SchemaType.STRING, description: "Descripción larga en español" },
+            aiSummary: { type: SchemaType.STRING, description: "Una frase tagline en español" },
+            suggestedCategory: { type: SchemaType.STRING, description: "Una categoría del listado" },
+          },
+          required: ["longDesc", "aiSummary", "suggestedCategory"],
+        },
+      },
+    });
 
     const result = await model.generateContent(prompt);
     const text = result.response.text();
-    const jsonMatch = text.match(/\{[\s\S]*\}/);
-    if (jsonMatch) {
-      const parsed = JSON.parse(jsonMatch[0]) as {
-        longDesc?: string;
-        aiSummary?: string;
-        suggestedCategory?: string;
-      };
-      aiData.longDesc = parsed.longDesc ?? '';
-      aiData.aiSummary = parsed.aiSummary ?? '';
-      aiData.category = parsed.suggestedCategory ?? '';
-    }
+    const parsed = JSON.parse(text) as {
+      longDesc?: string;
+      aiSummary?: string;
+      suggestedCategory?: string;
+    };
+    return {
+      longDesc: (parsed.longDesc ?? '').trim(),
+      aiSummary: (parsed.aiSummary ?? '').trim(),
+      category: (parsed.suggestedCategory ?? '').trim(),
+    };
   } catch (err) {
-    console.error('Gemini error:', err);
+    console.error('Gemini structured error:', err);
+    return empty;
   }
-  return aiData;
+}
+
+async function runGeminiFallback(
+  url: string,
+  rawTitle: string,
+  rawDescription: string
+): Promise<Partial<AiShape>> {
+  if (!genAI) return {};
+  const prompt = `URL: ${url}
+Título: ${rawTitle}
+Resumen meta: ${rawDescription}
+
+Genera JSON con keys: "longDesc" (3 párrafos español), "aiSummary" (una frase ≤140 chars español), "suggestedCategory" (una de: Texto, Imagen, Video, Código, Audio, Chat, Marketing, Productividad).
+Solo JSON, sin markdown.`;
+
+  try {
+    const model = genAI.getGenerativeModel({
+      model: GEMINI_MODEL,
+      generationConfig: {
+        temperature: 0.4,
+        maxOutputTokens: 4096,
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: SchemaType.OBJECT,
+          properties: {
+            longDesc: { type: SchemaType.STRING },
+            aiSummary: { type: SchemaType.STRING },
+            suggestedCategory: { type: SchemaType.STRING },
+          },
+          required: ["longDesc", "aiSummary", "suggestedCategory"],
+        },
+      },
+    });
+    const result = await model.generateContent(prompt);
+    const p = JSON.parse(result.response.text()) as {
+      longDesc?: string;
+      aiSummary?: string;
+      suggestedCategory?: string;
+    };
+    return {
+      longDesc: p.longDesc?.trim(),
+      aiSummary: p.aiSummary?.trim(),
+      category: p.suggestedCategory?.trim(),
+    };
+  } catch {
+    return {};
+  }
+}
+
+function needsEnrichment(hostname: string): boolean {
+  return PREFER_JINA_HOSTNAME.has(hostname) || PREFER_JINA_HOSTNAME.has(hostname.replace(/^www\./, ''));
 }
 
 export async function POST(request: Request) {
@@ -174,11 +295,15 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Invalid URL' }, { status: 400 });
     }
 
+    const pageUrl = new URL(url);
+    const hostname = pageUrl.hostname;
+
     let rawTitle = '';
     let rawDescription = '';
     let faviconUrl = '';
     let contentForAi = '';
     let source: 'direct' | 'jina' | 'gemini_only' = 'direct';
+    let jinaBody: string | null = null;
 
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 18000);
@@ -212,41 +337,93 @@ export async function POST(request: Request) {
       (extracted.rawTitle.length < 2 && extracted.rawDescription.length < 10) ||
       html.length < 400;
 
-    if (!weakMeta && extracted) {
+    const shouldTryJina =
+      weakMeta ||
+      (extracted && (isScriptHeavyHtml(html) || needsEnrichment(hostname)));
+
+    if (shouldTryJina) {
+      jinaBody = await fetchViaJinaReader(url);
+    }
+
+    if (!weakMeta && extracted && !shouldTryJina) {
       rawTitle = extracted.rawTitle;
       rawDescription = extracted.rawDescription;
       faviconUrl = extracted.faviconUrl;
-      contentForAi = extracted.htmlSnippet;
-    } else {
-      const jinaText = await fetchViaJinaReader(url);
-      if (jinaText) {
-        const j = parseJinaMarkdown(jinaText, url);
-        rawTitle = j.rawTitle;
-        rawDescription = j.rawDescription;
-        contentForAi = j.htmlSnippet;
-        source = 'jina';
-        try {
-          const u = new URL(url);
-          faviconUrl = `${u.origin}/favicon.ico`;
-        } catch {
-          faviconUrl = '';
-        }
-      } else if (genAI) {
-        source = 'gemini_only';
-        rawTitle = new URL(url).hostname.replace(/^www\./, '');
-        rawDescription = '';
-        contentForAi = `No se pudo descargar el HTML (sitio protegido o bloqueo a servidores). Inferir desde la URL y el dominio público.`;
+      contentForAi = buildContentForPrompt(
+        rawDescription,
+        extracted.visibleText,
+        extracted.htmlSnippet,
+        null
+      );
+    } else if (jinaBody) {
+      const j = parseJinaMarkdown(jinaBody, url);
+      if (!rawTitle) rawTitle = j.rawTitle;
+      if (!rawDescription || rawDescription.length < 40) rawDescription = j.rawDescription;
+      else rawDescription = [rawDescription, j.rawDescription].filter(Boolean).join('\n\n').slice(0, 1200);
+      if (extracted?.rawTitle && extracted.rawTitle.length > j.rawTitle.length) {
+        rawTitle = extracted.rawTitle;
+      }
+      contentForAi = buildContentForPrompt(rawDescription, extracted?.visibleText ?? '', extracted?.htmlSnippet ?? '', j.body);
+      source = 'jina';
+      try {
+        const u = new URL(url);
+        faviconUrl = faviconUrl || `${u.origin}/favicon.ico`;
+      } catch {
+        /* noop */
+      }
+      if (!faviconUrl && extracted?.faviconUrl) faviconUrl = extracted.faviconUrl;
+    } else if (extracted && !jinaBody) {
+      rawTitle = extracted.rawTitle;
+      rawDescription = extracted.rawDescription;
+      faviconUrl = extracted.faviconUrl;
+      contentForAi = buildContentForPrompt(
+        rawDescription,
+        extracted.visibleText,
+        extracted.htmlSnippet,
+        null
+      );
+    }
+
+    if (!rawTitle && extracted) rawTitle = extracted.rawTitle;
+    if (!rawTitle) {
+      try {
+        rawTitle = hostname.replace(/^www\./, '');
+      } catch {
+        rawTitle = 'Herramienta';
       }
     }
 
-    const aiData = await runGemini(url, rawTitle, rawDescription, contentForAi);
+    if (!contentForAi.trim() && genAI) {
+      source = 'gemini_only';
+      contentForAi = `URL: ${url}. No se obtuvo HTML útil. Infiere desde el dominio y el producto público asociado.`;
+    }
+
+    let ai = await runGeminiStructured(url, rawTitle, rawDescription, contentForAi);
+
+    const incomplete =
+      ai.longDesc.length < 200 ||
+      ai.aiSummary.length < 12 ||
+      !ai.category;
+
+    if (incomplete) {
+      const fb = await runGeminiFallback(url, rawTitle, rawDescription);
+      if (fb.longDesc && (!ai.longDesc || ai.longDesc.length < fb.longDesc.length)) ai.longDesc = fb.longDesc!;
+      if (fb.aiSummary && (!ai.aiSummary || ai.aiSummary.length < fb.aiSummary.length)) ai.aiSummary = fb.aiSummary!;
+      if (fb.category && !ai.category) ai.category = fb.category!;
+    }
+
+    if (!ai.longDesc && rawDescription.length > 50) {
+      ai.longDesc = `${rawDescription}\n\n(Descripción ampliada no disponible automáticamente; puedes editar este texto.)`;
+    }
 
     return NextResponse.json({
       title: rawTitle,
       description: rawDescription,
       favicon: faviconUrl,
       source,
-      ...aiData,
+      longDesc: ai.longDesc,
+      aiSummary: ai.aiSummary,
+      category: ai.category,
     });
   } catch (error) {
     console.error('Scraper error:', error);
